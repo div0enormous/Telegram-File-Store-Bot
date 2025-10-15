@@ -49,6 +49,15 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS batch_upload_sessions (
     status TEXT DEFAULT 'waiting_end'
 )""")
 
+# New table for bot settings
+cursor.execute("""CREATE TABLE IF NOT EXISTS bot_settings (
+    setting_key TEXT PRIMARY KEY,
+    setting_value TEXT
+)""")
+
+# Initialize default auto-delete time (10 minutes)
+cursor.execute("INSERT OR IGNORE INTO bot_settings (setting_key, setting_value) VALUES ('auto_delete_minutes', '10')")
+
 conn.commit()
 
 # Helper Functions
@@ -63,6 +72,17 @@ def decode_payload(payload: str) -> str:
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMINS
+
+def get_auto_delete_time():
+    """Get the auto-delete time in minutes"""
+    cursor.execute("SELECT setting_value FROM bot_settings WHERE setting_key = 'auto_delete_minutes'")
+    result = cursor.fetchone()
+    return int(result[0]) if result else 10
+
+def set_auto_delete_time(minutes):
+    """Set the auto-delete time in minutes"""
+    cursor.execute("INSERT OR REPLACE INTO bot_settings (setting_key, setting_value) VALUES ('auto_delete_minutes', ?)", (str(minutes),))
+    conn.commit()
 
 def get_file_info(message: Message):
     """Extract file information from message"""
@@ -133,6 +153,15 @@ async def add_user(user_id, first_name, username):
                    (user_id, first_name, username))
     conn.commit()
 
+async def delete_messages_after_delay(chat_id, message_ids, delay_minutes):
+    """Delete messages after specified delay"""
+    await asyncio.sleep(delay_minutes * 60)
+    for msg_id in message_ids:
+        try:
+            await bot.delete_messages(chat_id, msg_id)
+        except:
+            pass
+
 # ------------------ USER INTERFACE ------------------
 
 @bot.on_message(filters.command("start") & filters.private)
@@ -190,9 +219,11 @@ async def show_admin_menu(message):
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
     
+    auto_delete = get_auto_delete_time()
+    
     buttons = [
         [InlineKeyboardButton("📊 Statistics", callback_data="stats"),
-         InlineKeyboardButton("📁 Batch Mode", callback_data="batch_help")],
+         InlineKeyboardButton("📦 Batch Mode", callback_data="batch_help")],
         [InlineKeyboardButton("👥 User Management", callback_data="user_mgmt"),
          InlineKeyboardButton("📢 Broadcast", callback_data="broadcast")],
         [InlineKeyboardButton("ℹ️ About", callback_data="about"),
@@ -204,7 +235,8 @@ async def show_admin_menu(message):
         f"📊 **Quick Stats:**\n"
         f"• Files: `{total_files}`\n"
         f"• Batches: `{total_batches}`\n"
-        f"• Users: `{total_users}`\n\n"
+        f"• Users: `{total_users}`\n"
+        f"• Auto-Delete: `{auto_delete} minutes`\n\n"
         f"📤 **Upload Files:** Just send any media file\n"
         f"📦 **Create Batch:** Use batch mode for multiple files\n\n"
         f"Choose an option below:",
@@ -219,11 +251,11 @@ async def handle_callbacks(_, query):
     if data == "help":
         await query.message.edit_text(
             "📖 **How to Use This Bot**\n\n"
-            "🔸 **For Users:**\n"
+            "📸 **For Users:**\n"
             "• Click on file links to download\n"
             "• All file types are supported\n"
             "• Links work permanently\n\n"
-            "🔸 **File Types Supported:**\n"
+            "📸 **File Types Supported:**\n"
             "• Documents (PDF, DOC, etc.)\n"
             "• Videos (MP4, MKV, etc.)\n"
             "• Photos (JPG, PNG, etc.)\n"
@@ -240,6 +272,7 @@ async def handle_callbacks(_, query):
             "🔹 **Features:**\n"
             "• All media types support\n"
             "• Batch download\n"
+            "• Auto-delete protection\n"
             "🔹 **Developed by : @x0deyen\n"
             "🔹 **Status:** Active ✅",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])
@@ -255,6 +288,47 @@ async def handle_callbacks(_, query):
             "📝 **For:** Technical issues, file requests, general queries",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])
         )
+    
+    elif data == "settings" and is_admin(user_id):
+        auto_delete = get_auto_delete_time()
+        buttons = [
+            [InlineKeyboardButton("⏱️ Change Auto-Delete Time", callback_data="change_autodelete")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="back")]
+        ]
+        await query.message.edit_text(
+            "🔧 **Bot Settings**\n\n"
+            f"⏱️ **Auto-Delete Time:** {auto_delete} minutes\n\n"
+            "Files sent to users will be automatically deleted after this time period.\n\n"
+            "Choose an option below:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    
+    elif data == "change_autodelete" and is_admin(user_id):
+        buttons = [
+            [InlineKeyboardButton("5 min", callback_data="set_delete_5"),
+             InlineKeyboardButton("10 min", callback_data="set_delete_10")],
+            [InlineKeyboardButton("15 min", callback_data="set_delete_15"),
+             InlineKeyboardButton("30 min", callback_data="set_delete_30")],
+            [InlineKeyboardButton("60 min", callback_data="set_delete_60"),
+             InlineKeyboardButton("Never", callback_data="set_delete_0")],
+            [InlineKeyboardButton("⬅️ Back", callback_data="settings")]
+        ]
+        await query.message.edit_text(
+            "⏱️ **Set Auto-Delete Time**\n\n"
+            "Choose how long files should stay before being deleted:\n\n"
+            "⚠️ Select 'Never' to disable auto-deletion.",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    
+    elif data.startswith("set_delete_") and is_admin(user_id):
+        minutes = int(data.split("_")[-1])
+        set_auto_delete_time(minutes)
+        time_text = f"{minutes} minutes" if minutes > 0 else "Disabled (Never delete)"
+        await query.answer(f"✅ Auto-delete time set to: {time_text}", show_alert=True)
+        # Go back to settings
+        await handle_callbacks(_, query)
+        query.data = "settings"
+        return
     
     elif data == "stats" and is_admin(user_id):
         cursor.execute("SELECT COUNT(*) FROM files")
@@ -272,13 +346,16 @@ async def handle_callbacks(_, query):
         cursor.execute("SELECT SUM(file_size) FROM files")
         total_size = cursor.fetchone()[0] or 0
         
+        auto_delete = get_auto_delete_time()
+        
         await query.message.edit_text(
             "📊 **Detailed Statistics**\n\n"
             f"📁 **Files:** {total_files}\n"
             f"📦 **Batches:** {total_batches}\n"
             f"👥 **Total Users:** {total_users}\n"
             f"🚫 **Banned Users:** {banned_users}\n"
-            f"💾 **Storage Used:** {format_file_size(total_size)}\n\n"
+            f"💾 **Storage Used:** {format_file_size(total_size)}\n"
+            f"⏱️ **Auto-Delete:** {auto_delete} min\n\n"
             f"🤖 **Bot Status:** Online ✅\n"
             f"📈 **Performance:** Excellent",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="back")]])
@@ -287,13 +364,13 @@ async def handle_callbacks(_, query):
     elif data == "batch_help" and is_admin(user_id):
         await query.message.edit_text(
             "📦 **Batch Mode Guide**\n\n"
-            "🔸 **How to create batches:**\n"
+            "📸 **How to create batches:**\n"
             "1. Use `/startbatch <batch_name>` command\n"
             "2. Upload your files one by one\n"
             "3. Use `/endbatch` when done\n\n"
-            "🔸 **Alternative method:**\n"
+            "📸 **Alternative method:**\n"
             "Use `/newbatch <start_id> <end_id>` with message IDs from DB channel\n\n"
-            "🔸 **Benefits:**\n"
+            "📸 **Benefits:**\n"
             "• Single link for multiple files\n"
             "• Organized file sharing\n"
             "• Easy management",
@@ -351,7 +428,7 @@ async def handle_media_upload(_, message):
     
     await message.reply_text(
         f"✅ **File Uploaded Successfully!**\n\n"
-        f"📝 **File Details:**\n"
+        f"📄 **File Details:**\n"
         f"• Name: `{file_info['name']}`\n"
         f"• Type: `{file_info['type']}`\n"
         f"• Size: `{format_file_size(file_info['size'])}`\n\n"
@@ -520,24 +597,37 @@ async def send_file(message, file_id):
     chat_id, msg_id, file_name, file_type = row
     
     try:
+        auto_delete = get_auto_delete_time()
+        
         # Send file info first
-        await message.reply_text(
-            f"📁 **Downloading File...**\n\n"
-            f"📝 **Name:** {file_name}\n"
+        info_msg = await message.reply_text(
+            f"📥 **Downloading File...**\n\n"
+            f"📄 **Name:** {file_name}\n"
             f"📂 **Type:** {file_type}\n\n"
             f"⏳ Please wait while we fetch your file..."
-           
         )
         
         # Copy the actual file
-        await bot.copy_message(message.chat.id, chat_id, msg_id)
+        file_msg = await bot.copy_message(message.chat.id, chat_id, msg_id)
         
         # Send completion message
-        await message.reply_text(
-            f"✅ **Download Complete!**\n\n"
-            f"File: {file_name}"
-            f"⚠️Download it or Forward this files to saved msg it will delete with in 10 min!"
-        )
+        if auto_delete > 0:
+            complete_msg = await message.reply_text(
+                f"✅ **Download Complete!**\n\n"
+                f"File: {file_name}\n\n"
+                f"⚠️ **Important:** Download it or Forward this file to Saved Messages!\n"
+                f"🗑️ This file will be automatically deleted in **{auto_delete} minutes**!"
+            )
+            
+            # Schedule deletion
+            messages_to_delete = [info_msg.id, file_msg.id, complete_msg.id]
+            asyncio.create_task(delete_messages_after_delay(message.chat.id, messages_to_delete, auto_delete))
+        else:
+            await message.reply_text(
+                f"✅ **Download Complete!**\n\n"
+                f"File: {file_name}\n\n"
+                f"📌 This file will remain in your chat."
+            )
         
     except Exception as e:
         await message.reply_text(
@@ -560,8 +650,10 @@ async def send_batch(message, batch_id):
     batch_name, start, end = row
     file_count = end - start + 1
     
+    auto_delete = get_auto_delete_time()
+    
     # Send batch info
-    await message.reply_text(
+    info_msg = await message.reply_text(
         f"📦 **Download Started**\n\n"
         f"📝 **Name:** {batch_name}\n"
         f"📁 **Files:** {file_count} files\n\n"
@@ -569,23 +661,39 @@ async def send_batch(message, batch_id):
     
     successful = 0
     failed = 0
+    sent_messages = [info_msg.id]
     
     for msg_id in range(start, end + 1):
         try:
-            await bot.copy_message(message.chat.id, DB_CHANNEL, msg_id)
+            sent = await bot.copy_message(message.chat.id, DB_CHANNEL, msg_id)
+            sent_messages.append(sent.id)
             successful += 1
             await asyncio.sleep(0.5)  # Small delay to avoid flooding
         except:
             failed += 1
     
     # Send completion summary
-    await message.reply_text(
-        f"✅ **Download Complete!**\n\n"
-        f"📦 **{batch_name}**\n"
-        f"✅ **Downloaded:** {successful} files\n"
-        f"❌ **Failed:** {failed} files\n\n"
-        f"💡 Thank you for using our service!"
-    )
+    if auto_delete > 0:
+        complete_msg = await message.reply_text(
+            f"✅ **Download Complete!**\n\n"
+            f"📦 **{batch_name}**\n"
+            f"✅ **Downloaded:** {successful} files\n"
+            f"❌ **Failed:** {failed} files\n\n"
+            f"⚠️ **Important:** Download or Forward these files to Saved Messages!\n"
+            f"🗑️ All files will be automatically deleted in **{auto_delete} minutes**!"
+        )
+        sent_messages.append(complete_msg.id)
+        
+        # Schedule deletion
+        asyncio.create_task(delete_messages_after_delay(message.chat.id, sent_messages, auto_delete))
+    else:
+        await message.reply_text(
+            f"✅ **Download Complete!**\n\n"
+            f"📦 **{batch_name}**\n"
+            f"✅ **Downloaded:** {successful} files\n"
+            f"❌ **Failed:** {failed} files\n\n"
+            f"📌 These files will remain in your chat."
+        )
 
 # ------------------ BROADCAST SYSTEM ------------------
 
@@ -627,4 +735,5 @@ async def broadcast_message(_, message):
 # Start the bot
 if __name__ == "__main__":
     print("✅ Bot is now running and ready to serve!")
+    print(f"⏱️ Auto-delete time: {get_auto_delete_time()} minutes")
     bot.run()
