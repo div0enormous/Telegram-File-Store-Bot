@@ -1,15 +1,13 @@
 import sqlite3, base64
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, ForceReply
-from config import API_ID, API_HASH, BOT_TOKEN, DB_CHANNEL, ADMINS
+from configbck import API_ID, API_HASH, BOT_TOKEN, DB_CHANNEL, ADMINS
 import asyncio
 from datetime import datetime, timedelta
 import re
 import logging
-from pyrogram.errors import (
-    ConnectionError, FloodWait, AuthKeyUnregistered, 
-    UserDeactivated, BadRequest, RPCError
-)
+from pyrogram.errors import FloodWait, RPCError
+import socket
 
 # Configure logging
 logging.basicConfig(
@@ -243,8 +241,8 @@ async def auto_delete_expired_files():
             # Reset retry delay on success
             retry_delay = 60
             
-        except ConnectionError as e:
-            logger.warning(f"⚠️ Connection error in auto-delete: {e}")
+        except (OSError, socket.error, TimeoutError) as e:
+            logger.warning(f"⚠️ Network error in auto-delete: {e}")
             logger.info(f"🔄 Retrying in {retry_delay} seconds...")
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, max_retry_delay)
@@ -939,8 +937,8 @@ async def send_file(message, file_id):
             await asyncio.sleep(e.value)
             retry_count += 1
             
-        except ConnectionError as e:
-            logger.warning(f"Connection error: {e}. Retrying...")
+        except (OSError, socket.error, TimeoutError) as e:
+            logger.warning(f"Network error: {e}. Retrying...")
             await asyncio.sleep(5)
             retry_count += 1
             
@@ -1010,8 +1008,8 @@ async def send_batch(message, batch_id):
                 await asyncio.sleep(e.value)
                 retry_count += 1
                 
-            except ConnectionError:
-                logger.warning("Connection error, retrying...")
+            except (OSError, socket.error, TimeoutError):
+                logger.warning("Network error, retrying...")
                 await asyncio.sleep(3)
                 retry_count += 1
                 
@@ -1472,7 +1470,7 @@ async def run_bot_with_reconnect():
             # Keep the bot running
             await asyncio.Event().wait()
             
-        except ConnectionError as e:
+        except (OSError, socket.error, TimeoutError, RPCError) as e:
             logger.error(f"❌ Connection lost: {e}")
             logger.info(f"🔄 Attempting to reconnect in {retry_delay} seconds...")
             await asyncio.sleep(retry_delay)
